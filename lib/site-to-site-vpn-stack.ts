@@ -1,19 +1,148 @@
-import { Duration, Stack, StackProps } from 'aws-cdk-lib';
-import * as sns from 'aws-cdk-lib/aws-sns';
-import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
+import { Stack, StackProps, Tags } from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export class SiteToSiteVpnStack extends Stack {
+  private vpc: ec2.Vpc;
+  private subnetPrivateA: ec2.Subnet;
+
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
-    const queue = new sqs.Queue(this, 'SiteToSiteVpnQueue', {
-      visibilityTimeout: Duration.seconds(300)
+    this.vpcAndTGWSetup();
+    this.instancesSetup();
+  }
+
+  private vpcAndTGWSetup() {
+    this.vpc = new ec2.Vpc(this, 'aws_vpc', {
+      cidr: '10.16.0.0/16',
+      enableDnsSupport: true,
+      enableDnsHostnames: true
     });
 
-    const topic = new sns.Topic(this, 'SiteToSiteVpnTopic');
+    Tags.of(this.vpc).add('Name', 'A4L-AWS');
 
-    topic.addSubscription(new subs.SqsSubscription(queue));
+    const subnetPrivateA = new ec2.Subnet(this, 'PrivateA', {
+      vpcId: this.vpc.vpcId,
+      availabilityZone: this.availabilityZones[0],
+      cidrBlock: '10.16.32.0/20'
+    });
+    Tags.of(subnetPrivateA).add('Name', 'sn-aws-private-A');
+
+    const subnetPrivateB = new ec2.Subnet(this, 'PrivateB', {
+      vpcId: this.vpc.vpcId,
+      availabilityZone: this.availabilityZones[1],
+      cidrBlock: '10.16.96.0/20'
+    });
+    Tags.of(subnetPrivateA).add('Name', 'sn-aws-private-B');
+
+    const customRouteTable = new ec2.CfnRouteTable(this, 'CustomRT', {
+      vpcId: this.vpc.vpcId
+    });
+    Tags.of(customRouteTable).add('Name', 'A4L-AWS-RT');
+
+    const transitGateway = new ec2.CfnTransitGateway(this, 'TransitGateway', {
+      amazonSideAsn: 64512,
+      description: 'A4LTGW',
+      defaultRouteTableAssociation: 'enable',
+      dnsSupport: 'enable',
+      vpnEcmpSupport: 'enable'
+    });
+
+    const transitGatewayAttachment = new ec2.CfnTransitGatewayAttachment(this, 'TGWAttachment', {
+      subnetIds: [subnetPrivateA.subnetId, subnetPrivateB.subnetId],
+      transitGatewayId: transitGateway.attrId,
+      vpcId: this.vpc.vpcId
+    });
+
+    const transitGatewayDefaultRoute = new ec2.CfnRoute(this, 'TGWDefaultRoute', {
+      transitGatewayId: transitGateway.attrId,
+      routeTableId: customRouteTable.ref,
+      destinationCidrBlock: '0.0.0.0/0'
+    }).addDependsOn(transitGatewayAttachment);
+
+    const routeTableAssociationPrivateA = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateA', {
+      subnetId: subnetPrivateA.subnetId,
+      routeTableId: customRouteTable.ref
+    });
+
+    const routeTableAssociationPrivateB = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateB', {
+      subnetId: subnetPrivateB.subnetId,
+      routeTableId: customRouteTable.ref
+    });
+  }
+
+  private instancesSetup() {
+    const securityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
+      vpc: this.vpc,
+      description: 'Default A4L AWS SG'
+    });
+
+    securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(22), 'Allow SSH IPv4 IN');
+    securityGroup.addIngressRule(ec2.Peer.ipv4('192.168.8.0/21'), ec2.Port.allTraffic(), 'Allow ALL from ONPREM Networks');
+
+    const securityGroupIngress = new ec2.CfnSecurityGroupIngress(this, 'SecurityGroupIngress', {
+      groupId: securityGroup.securityGroupId,
+      ipProtocol: '-1',
+      sourceSecurityGroupId: securityGroup.securityGroupId,
+      description: 'Allow porters of this security group to access other resources using the same SG under any protocol.'
+    });
+
+    const ec2PolicyStatement = new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ssm:DescribeAssociation',
+        'ssm:GetDeployablePatchSnapshotForInstance',
+        'ssm:GetDocument',
+        'ssm:DescribeDocument',
+        'ssm:GetManifest',
+        'ssm:GetParameter',
+        'ssm:GetParameters',
+        'ssm:ListAssociations',
+        'ssm:ListInstanceAssociations',
+        'ssm:PutInventory',
+        'ssm:PutComplianceItems',
+        'ssm:PutConfigurePackageResult',
+        'ssm:UpdateAssociationStatus',
+        'ssm:UpdateInstanceAssociationStatus',
+        'ssm:UpdateInstanceInformation',
+        'ssmmessages:CreateControlChannel',
+        'ssmmessages:CreateDataChannel',
+        'ssmmessages:OpenControlChannel',
+        'ssmmessages:OpenDataChannel',
+        'ec2messages:AcknowledgeMessage',
+        'ec2messages:DeleteMessage',
+        'ec2messages:FailMessage',
+        'ec2messages:GetEndpoint',
+        'ec2messages:GetMessages',
+        'ec2messages:SendReply',
+        's3:*',
+        'sns:*'
+    ],
+      resources: ['*']
+    });
+
+    const ec2Policy = new iam.Policy(this, 'Ec2Policy', {policyName: 'root'});
+    ec2Policy.addStatements(ec2PolicyStatement);
+
+    const principal = new iam.ServicePrincipal('ec2.amazonaws.com');
+    const ec2Role = new iam.Role(this, 'Ec2Role', {
+      assumedBy: principal,
+      path: '/',
+    });
+    ec2Policy.attachToRole(ec2Role);
+    ec2Role.grant(principal, 'sts:AssumeRole');
+
+    const ec2A = new ec2.Instance(this, 'EC2A', {
+      vpc: this.vpc,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.MICRO),
+      machineImage: ec2.MachineImage.latestAmazonLinux(),
+      vpcSubnets: {
+        subnets: [this.subnetPrivateA]
+      },
+      securityGroup
+    });
+    Tags.of(ec2A).add('Name', 'AWS-EC2-A');
   }
 }
