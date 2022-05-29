@@ -12,7 +12,7 @@ export class SiteToSiteVpnStack extends Stack {
     super(scope, id, props);
 
     this.vpcAndTGWSetup();
-    this.instancesSetup();
+    this.instancesAndVpcEndpointsSetup();
   }
 
   private vpcAndTGWSetup() {
@@ -89,7 +89,7 @@ export class SiteToSiteVpnStack extends Stack {
     }).addDependsOn(transitGatewayAttachment);
   }
 
-  private instancesSetup() {
+  private instancesAndVpcEndpointsSetup() {
     const securityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
       vpc: this.vpc,
       description: 'Default A4L AWS SG'
