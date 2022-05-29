@@ -5,8 +5,8 @@ import { Construct } from 'constructs';
 
 export class SiteToSiteVpnStack extends Stack {
   private vpc: ec2.Vpc;
-  private subnetPrivateA: ec2.Subnet;
-  private subnetPrivateB: ec2.Subnet;
+  private subnetPrivateA: ec2.ISubnet;
+  private subnetPrivateB: ec2.ISubnet;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -19,24 +19,28 @@ export class SiteToSiteVpnStack extends Stack {
     this.vpc = new ec2.Vpc(this, 'aws_vpc', {
       cidr: '10.16.0.0/16',
       enableDnsSupport: true,
-      enableDnsHostnames: true
+      enableDnsHostnames: true,
+      subnetConfiguration: []
     });
-
     Tags.of(this.vpc).add('Name', 'A4L-AWS');
 
-    this.subnetPrivateA = new ec2.Subnet(this, 'PrivateA', {
+    const subnetPrivateA = new ec2.CfnSubnet(this, 'PrivateA', {
       vpcId: this.vpc.vpcId,
       availabilityZone: this.availabilityZones[0],
       cidrBlock: '10.16.32.0/20'
     });
-    Tags.of(this.subnetPrivateA).add('Name', 'sn-aws-private-A');
+    Tags.of(subnetPrivateA).add('Name', 'sn-aws-private-A');
+    this.subnetPrivateA = ec2.Subnet.fromSubnetId(this, 'importedPrivateA', subnetPrivateA.attrSubnetId);
+    // this.subnetPrivateA.node.addDependency(subnetPrivateA);
 
-    this.subnetPrivateB = new ec2.Subnet(this, 'PrivateB', {
+    const subnetPrivateB = new ec2.CfnSubnet(this, 'PrivateB', {
       vpcId: this.vpc.vpcId,
       availabilityZone: this.availabilityZones[1],
-      cidrBlock: '10.16.96.0/20'
+      cidrBlock: '10.16.96.0/20',
     });
-    Tags.of(this.subnetPrivateB).add('Name', 'sn-aws-private-B');
+    Tags.of(subnetPrivateB).add('Name', 'sn-aws-private-B');
+    this.subnetPrivateB = ec2.Subnet.fromSubnetId(this, 'importedPrivateB', subnetPrivateB.attrSubnetId);
+    // this.subnetPrivateB.node.addDependency(subnetPrivateB);
 
     const customRouteTable = new ec2.CfnRouteTable(this, 'CustomRT', {
       vpcId: this.vpc.vpcId
@@ -52,7 +56,7 @@ export class SiteToSiteVpnStack extends Stack {
     });
 
     const transitGatewayAttachment = new ec2.CfnTransitGatewayAttachment(this, 'TGWAttachment', {
-      subnetIds: [this.subnetPrivateA.subnetId, this.subnetPrivateB.subnetId],
+      subnetIds: [subnetPrivateA.attrSubnetId, subnetPrivateB.attrSubnetId],
       transitGatewayId: transitGateway.attrId,
       vpcId: this.vpc.vpcId
     });
@@ -65,12 +69,12 @@ export class SiteToSiteVpnStack extends Stack {
     }).addDependsOn(transitGatewayAttachment);
 
     const routeTableAssociationPrivateA = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateA', {
-      subnetId: this.subnetPrivateA.subnetId,
+      subnetId: subnetPrivateA.attrSubnetId,
       routeTableId: customRouteTable.ref
     });
 
     const routeTableAssociationPrivateB = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateB', {
-      subnetId: this.subnetPrivateB.subnetId,
+      subnetId: subnetPrivateB.attrSubnetId,
       routeTableId: customRouteTable.ref
     });
   }
