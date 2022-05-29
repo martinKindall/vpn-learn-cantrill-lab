@@ -12,7 +12,7 @@ export class SiteToSiteVpnStack extends Stack {
     super(scope, id, props);
 
     this.vpcAndTGWSetup();
-    // this.instancesSetup();
+    this.instancesSetup();
   }
 
   private vpcAndTGWSetup() {
@@ -29,9 +29,10 @@ export class SiteToSiteVpnStack extends Stack {
     });
     Tags.of(customRouteTable).add('Name', 'A4L-AWS-RT');
 
+    const azSubnetA = this.availabilityZones[0];
     const subnetPrivateA = new ec2.CfnSubnet(this, 'PrivateA', {
       vpcId: this.vpc.vpcId,
-      availabilityZone: this.availabilityZones[0],
+      availabilityZone: azSubnetA,
       cidrBlock: '10.16.32.0/20'
     });
     Tags.of(subnetPrivateA).add('Name', 'sn-aws-private-A');
@@ -43,12 +44,14 @@ export class SiteToSiteVpnStack extends Stack {
 
     this.subnetPrivateA = ec2.Subnet.fromSubnetAttributes(this, 'importedPrivateA', {
       subnetId: subnetPrivateA.attrSubnetId,
-      routeTableId: customRouteTable.attrRouteTableId
+      routeTableId: customRouteTable.attrRouteTableId,
+      availabilityZone: azSubnetA
     });
 
+    const azSubnetB = this.availabilityZones[1];
     const subnetPrivateB = new ec2.CfnSubnet(this, 'PrivateB', {
       vpcId: this.vpc.vpcId,
-      availabilityZone: this.availabilityZones[1],
+      availabilityZone: azSubnetB,
       cidrBlock: '10.16.96.0/20',
     });
     Tags.of(subnetPrivateB).add('Name', 'sn-aws-private-B');
@@ -60,7 +63,8 @@ export class SiteToSiteVpnStack extends Stack {
 
     this.subnetPrivateB = ec2.Subnet.fromSubnetAttributes(this, 'importedPrivateB', {
       subnetId: subnetPrivateB.attrSubnetId,
-      routeTableId: customRouteTable.attrRouteTableId
+      routeTableId: customRouteTable.attrRouteTableId,
+      availabilityZone: azSubnetB
     });
 
     const transitGateway = new ec2.CfnTransitGateway(this, 'TransitGateway', {
@@ -183,7 +187,8 @@ export class SiteToSiteVpnStack extends Stack {
       vpcSubnets: {
         subnets: [this.subnetPrivateA]
       },
-      securityGroup
+      securityGroup,
+      role: ec2Role
     });
     ec2A.node.addDependency(ssmInterfaceEndpoint, ssmEc2MessagesInterfaceEndpoint, ssmMessagesInterfaceEndpoint);
     Tags.of(ec2A).add('Name', 'AWS-EC2-A');
@@ -195,7 +200,8 @@ export class SiteToSiteVpnStack extends Stack {
       vpcSubnets: {
         subnets: [this.subnetPrivateB]
       },
-      securityGroup
+      securityGroup,
+      role: ec2Role
     });
     ec2B.node.addDependency(ssmInterfaceEndpoint, ssmEc2MessagesInterfaceEndpoint, ssmMessagesInterfaceEndpoint);
     Tags.of(ec2B).add('Name', 'AWS-EC2-B');
