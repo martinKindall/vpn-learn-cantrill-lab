@@ -152,7 +152,7 @@ export class SiteToSiteVpnStack extends Stack {
 
     const ssmInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmEndpoint', {
       vpc: this.vpc,
-      service: new ec2.InterfaceVpcEndpointAwsService(`com.amazonaws.${this.region}.ssm`),
+      service: ec2.InterfaceVpcEndpointAwsService.SSM,
       privateDnsEnabled: true,
       subnets: {
         subnets: [this.subnetPrivateA, this.subnetPrivateB]
@@ -162,7 +162,7 @@ export class SiteToSiteVpnStack extends Stack {
 
     const ssmEc2MessagesInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmEc2MessagesEndpoint', {
       vpc: this.vpc,
-      service: new ec2.InterfaceVpcEndpointAwsService(`com.amazonaws.${this.region}.ec2messages`),
+      service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
       privateDnsEnabled: true,
       subnets: {
         subnets: [this.subnetPrivateA, this.subnetPrivateB]
@@ -172,7 +172,7 @@ export class SiteToSiteVpnStack extends Stack {
 
     const ssmMessagesInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmMessagesEndpoint', {
       vpc: this.vpc,
-      service: new ec2.InterfaceVpcEndpointAwsService(`com.amazonaws.${this.region}.ssmmessages`),
+      service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
       privateDnsEnabled: true,
       subnets: {
         subnets: [this.subnetPrivateA, this.subnetPrivateB]
