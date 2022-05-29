@@ -24,14 +24,27 @@ export class SiteToSiteVpnStack extends Stack {
     });
     Tags.of(this.vpc).add('Name', 'A4L-AWS');
 
+    const customRouteTable = new ec2.CfnRouteTable(this, 'CustomRT', {
+      vpcId: this.vpc.vpcId
+    });
+    Tags.of(customRouteTable).add('Name', 'A4L-AWS-RT');
+
     const subnetPrivateA = new ec2.CfnSubnet(this, 'PrivateA', {
       vpcId: this.vpc.vpcId,
       availabilityZone: this.availabilityZones[0],
       cidrBlock: '10.16.32.0/20'
     });
     Tags.of(subnetPrivateA).add('Name', 'sn-aws-private-A');
-    this.subnetPrivateA = ec2.Subnet.fromSubnetId(this, 'importedPrivateA', subnetPrivateA.attrSubnetId);
-    // this.subnetPrivateA.node.addDependency(subnetPrivateA);
+
+    const routeTableAssociationPrivateA = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateA', {
+      subnetId: subnetPrivateA.attrSubnetId,
+      routeTableId: customRouteTable.ref
+    });
+
+    this.subnetPrivateA = ec2.Subnet.fromSubnetAttributes(this, 'importedPrivateA', {
+      subnetId: subnetPrivateA.attrSubnetId,
+      routeTableId: customRouteTable.attrRouteTableId
+    });
 
     const subnetPrivateB = new ec2.CfnSubnet(this, 'PrivateB', {
       vpcId: this.vpc.vpcId,
@@ -39,13 +52,16 @@ export class SiteToSiteVpnStack extends Stack {
       cidrBlock: '10.16.96.0/20',
     });
     Tags.of(subnetPrivateB).add('Name', 'sn-aws-private-B');
-    this.subnetPrivateB = ec2.Subnet.fromSubnetId(this, 'importedPrivateB', subnetPrivateB.attrSubnetId);
-    // this.subnetPrivateB.node.addDependency(subnetPrivateB);
 
-    const customRouteTable = new ec2.CfnRouteTable(this, 'CustomRT', {
-      vpcId: this.vpc.vpcId
+    const routeTableAssociationPrivateB = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateB', {
+      subnetId: subnetPrivateB.attrSubnetId,
+      routeTableId: customRouteTable.ref
     });
-    Tags.of(customRouteTable).add('Name', 'A4L-AWS-RT');
+
+    this.subnetPrivateB = ec2.Subnet.fromSubnetAttributes(this, 'importedPrivateB', {
+      subnetId: subnetPrivateB.attrSubnetId,
+      routeTableId: customRouteTable.attrRouteTableId
+    });
 
     const transitGateway = new ec2.CfnTransitGateway(this, 'TransitGateway', {
       amazonSideAsn: 64512,
@@ -67,16 +83,6 @@ export class SiteToSiteVpnStack extends Stack {
       routeTableId: customRouteTable.ref,
       destinationCidrBlock: '0.0.0.0/0'
     }).addDependsOn(transitGatewayAttachment);
-
-    const routeTableAssociationPrivateA = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateA', {
-      subnetId: subnetPrivateA.attrSubnetId,
-      routeTableId: customRouteTable.ref
-    });
-
-    const routeTableAssociationPrivateB = new ec2.CfnSubnetRouteTableAssociation(this, 'SubnetAssociationPrivateB', {
-      subnetId: subnetPrivateB.attrSubnetId,
-      routeTableId: customRouteTable.ref
-    });
   }
 
   private instancesSetup() {
@@ -137,8 +143,8 @@ export class SiteToSiteVpnStack extends Stack {
       assumedBy: principal,
       path: '/',
     });
-    ec2Policy.attachToRole(ec2Role);
     ec2Role.grant(principal, 'sts:AssumeRole');
+    ec2Policy.attachToRole(ec2Role);
 
     const ssmInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmEndpoint', {
       vpc: this.vpc,
