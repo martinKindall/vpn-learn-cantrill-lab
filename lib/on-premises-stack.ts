@@ -1,15 +1,23 @@
-import { cfnTagToCloudFormation, Stack, StackProps, Tags } from 'aws-cdk-lib';
+import { Stack, StackProps, Tags } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import { UserData } from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export class OnPremisesStack extends Stack {
   private vpc: ec2.Vpc;
+  private pubSubnet: ec2.ISubnet;
+  private ec2Role: iam.Role;
+  private securityGroup: ec2.SecurityGroup;
+  private eniR1Private: ec2.CfnNetworkInterface;
+  private eniR2Private: ec2.CfnNetworkInterface;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
     this.vpcSetup();
+    this.createEc2Role();
+    this.routerAndServersSetups();
   }
 
   private vpcSetup() {
@@ -30,24 +38,25 @@ export class OnPremisesStack extends Stack {
       internetGatewayId: internetGW.attrInternetGatewayId
     });
 
+    const pubSubnetAZ = this.availabilityZones[0];
     const pubSubnet = new ec2.CfnSubnet(this, 'pubSubnet', {
       mapPublicIpOnLaunch: true,
       vpcId: this.vpc.vpcId,
-      availabilityZone: this.availabilityZones[0],
+      availabilityZone: pubSubnetAZ,
       cidrBlock: '192.168.12.0/24',
       tags: [{key: 'Name', value: 'ONPREM-PUBLIC'}]
     });
 
     const priv1Subnet = new ec2.CfnSubnet(this, 'priv1Subnet', {
       vpcId: this.vpc.vpcId,
-      availabilityZone: this.availabilityZones[0],
+      availabilityZone: pubSubnetAZ,
       cidrBlock: '192.168.10.0/24',
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-1'}]
     });
 
     const priv2Subnet = new ec2.CfnSubnet(this, 'priv2Subnet', {
       vpcId: this.vpc.vpcId,
-      availabilityZone: this.availabilityZones[0],
+      availabilityZone: pubSubnetAZ,
       cidrBlock: '192.168.11.0/24',
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-2'}]
     });
@@ -55,6 +64,11 @@ export class OnPremisesStack extends Stack {
     const publicRT = new ec2.CfnRouteTable(this, 'publicRT', {
       vpcId: this.vpc.vpcId,
       tags: [{key: 'Name', value: 'ONPREM-PUBLIC-RT'}]
+    });
+    this.pubSubnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPubSubnet', {
+      subnetId: pubSubnet.attrSubnetId,
+      routeTableId: publicRT.attrRouteTableId,
+      availabilityZone: pubSubnetAZ
     });
 
     const defaultRoute = new ec2.CfnRoute(this, 'defaultRoute', {
@@ -73,24 +87,24 @@ export class OnPremisesStack extends Stack {
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-RT2'}]
     });
 
-    const securityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
+    this.securityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
       vpc: this.vpc,
       description: 'Default ONPREM SG'
     });
-    securityGroup.addIngressRule(ec2.Peer.ipv4('10.16.0.0/16'), ec2.Port.allTraffic(), 'Allow All from AWS Environment');
+    this.securityGroup.addIngressRule(ec2.Peer.ipv4('10.16.0.0/16'), ec2.Port.allTraffic(), 'Allow All from AWS Environment');
 
-    const eniR1Private = new ec2.CfnNetworkInterface(this, 'eniR1Private', {
+    this.eniR1Private = new ec2.CfnNetworkInterface(this, 'eniR1Private', {
       subnetId: priv1Subnet.attrSubnetId,
       description: 'Router1 PRIVATE INTERFACE',
-      groupSet: [securityGroup.securityGroupId],
+      groupSet: [this.securityGroup.securityGroupId],
       sourceDestCheck: false,
       tags: [{key: 'Name', value: 'ONPREM-ENI1-PRIVATE'}]
     });
 
-    const eniR2Private = new ec2.CfnNetworkInterface(this, 'eniR2Private', {
+    this.eniR2Private = new ec2.CfnNetworkInterface(this, 'eniR2Private', {
       subnetId: priv2Subnet.attrSubnetId,
       description: 'Router2 PRIVATE INTERFACE',
-      groupSet: [securityGroup.securityGroupId],
+      groupSet: [this.securityGroup.securityGroupId],
       sourceDestCheck: false,
       tags: [{key: 'Name', value: 'ONPREM-ENI2-PRIVATE'}]
     });
@@ -98,13 +112,13 @@ export class OnPremisesStack extends Stack {
     const route1AwsIpv4 = new ec2.CfnRoute(this, 'route1AwsIpv4', {
       routeTableId: priv1RT.attrRouteTableId,
       destinationCidrBlock: '10.16.0.0/16',
-      networkInterfaceId: eniR1Private.attrId
+      networkInterfaceId: this.eniR1Private.attrId
     });
 
     const route2AwsIpv4 = new ec2.CfnRoute(this, 'route2AwsIpv4', {
       routeTableId: priv2RT.attrRouteTableId,
       destinationCidrBlock: '10.16.0.0/16',
-      networkInterfaceId: eniR2Private.attrId
+      networkInterfaceId: this.eniR2Private.attrId
     });
 
     const defaultRTToPubAssociation = new ec2.CfnSubnetRouteTableAssociation(this, 'defaultRTToPubAssociation', {
@@ -121,5 +135,100 @@ export class OnPremisesStack extends Stack {
       subnetId: priv2Subnet.attrSubnetId,
       routeTableId: priv2RT.attrRouteTableId
     });
+  }
+
+  private routerAndServersSetups() {
+    const router1 = this.createRouter('router1', 'ONPREM-ROUTER1');
+    const router2 = this.createRouter('router2', 'ONPREM-ROUTER2');
+
+    const attachEni1Router1 = new ec2.CfnNetworkInterfaceAttachment(this, 'attachEni1Router1', {
+      instanceId: router1.instanceId,
+      networkInterfaceId: this.eniR1Private.attrId,
+      deviceIndex: "1"
+    });
+
+    const attachEni1Router2 = new ec2.CfnNetworkInterfaceAttachment(this, 'attachEni1Router2', {
+      instanceId: router2.instanceId,
+      networkInterfaceId: this.eniR2Private.attrId,
+      deviceIndex: "1"
+    });
+  }
+
+  private createEc2Role() {
+    const ec2PolicyStatement = new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'ssm:DescribeAssociation',
+        'ssm:GetDeployablePatchSnapshotForInstance',
+        'ssm:GetDocument',
+        'ssm:DescribeDocument',
+        'ssm:GetManifest',
+        'ssm:GetParameter',
+        'ssm:GetParameters',
+        'ssm:ListAssociations',
+        'ssm:ListInstanceAssociations',
+        'ssm:PutInventory',
+        'ssm:PutComplianceItems',
+        'ssm:PutConfigurePackageResult',
+        'ssm:UpdateAssociationStatus',
+        'ssm:UpdateInstanceAssociationStatus',
+        'ssm:UpdateInstanceInformation',
+        'ssmmessages:CreateControlChannel',
+        'ssmmessages:CreateDataChannel',
+        'ssmmessages:OpenControlChannel',
+        'ssmmessages:OpenDataChannel',
+        'ec2messages:AcknowledgeMessage',
+        'ec2messages:DeleteMessage',
+        'ec2messages:FailMessage',
+        'ec2messages:GetEndpoint',
+        'ec2messages:GetMessages',
+        'ec2messages:SendReply',
+        's3:*',
+        'sns:*'
+    ],
+      resources: ['*']
+    });
+
+    const ec2Policy = new iam.Policy(this, 'Ec2Policy', {policyName: 'root'});
+    ec2Policy.addStatements(ec2PolicyStatement);
+
+    const principal = new iam.ServicePrincipal('ec2.amazonaws.com');
+    this.ec2Role = new iam.Role(this, 'Ec2Role', {
+      assumedBy: principal,
+      path: '/',
+    });
+    this.ec2Role.grant(principal, 'sts:AssumeRole');
+    ec2Policy.attachToRole(this.ec2Role);
+  }
+
+  private createRouter(name: string, tag: string) {
+    const router = new ec2.Instance(this, name, {
+      vpc: this.vpc,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
+      machineImage: ec2.MachineImage.genericLinux({'us-east-1': 'ami-0ac80df6eff0e70b5'}),
+      vpcSubnets: {
+        subnets: [this.pubSubnet]
+      },
+      securityGroup: this.securityGroup,
+      role: this.ec2Role,
+      sourceDestCheck: false,
+      userData: UserData.custom(
+        `#!/bin/bash -xe
+        apt-get update && apt-get install -y strongswan wget
+        mkdir /home/ubuntu/demo_assets
+        cd /home/ubuntu/demo_assets
+        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec-vti.sh
+        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec.conf
+        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec.secrets
+        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/51-eth1.yaml
+        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ffrouting-install.sh
+        chown ubuntu:ubuntu /home/ubuntu/demo_assets -R
+        cp /home/ubuntu/demo_assets/51-eth1.yaml /etc/netplan
+        netplan --debug apply`
+      )
+    });
+    Tags.of(router).add('Name', tag);
+
+    return router;
   }
 }
