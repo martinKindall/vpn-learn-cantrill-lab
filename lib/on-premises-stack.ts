@@ -1,12 +1,13 @@
-import { Stack, StackProps, Tags } from 'aws-cdk-lib';
+import { Stack, StackProps, Tags, CfnOutput } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import { UserData } from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export class OnPremisesStack extends Stack {
   private vpc: ec2.Vpc;
   private pubSubnet: ec2.ISubnet;
+  private priv1Subnet: ec2.ISubnet;
+  private priv2Subnet: ec2.ISubnet;
   private ec2Role: iam.Role;
   private securityGroup: ec2.SecurityGroup;
   private eniR1Private: ec2.CfnNetworkInterface;
@@ -17,7 +18,8 @@ export class OnPremisesStack extends Stack {
 
     this.vpcSetup();
     this.createEc2Role();
-    this.routerAndServersSetups();
+    const {router1, router2} = this.routerAndServersSetups();
+    this.outputs(router1, router2);
   }
 
   private vpcSetup() {
@@ -65,6 +67,7 @@ export class OnPremisesStack extends Stack {
       vpcId: this.vpc.vpcId,
       tags: [{key: 'Name', value: 'ONPREM-PUBLIC-RT'}]
     });
+
     this.pubSubnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPubSubnet', {
       subnetId: pubSubnet.attrSubnetId,
       routeTableId: publicRT.attrRouteTableId,
@@ -87,11 +90,30 @@ export class OnPremisesStack extends Stack {
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-RT2'}]
     });
 
+    this.priv1Subnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPriv1Subnet', {
+      subnetId: priv1Subnet.attrSubnetId,
+      routeTableId: priv1RT.attrRouteTableId,
+      availabilityZone: pubSubnetAZ
+    });
+
+    this.priv2Subnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPriv2Subnet', {
+      subnetId: priv2Subnet.attrSubnetId,
+      routeTableId: priv2RT.attrRouteTableId,
+      availabilityZone: pubSubnetAZ
+    });
+
     this.securityGroup = new ec2.SecurityGroup(this, 'SecurityGroup', {
       vpc: this.vpc,
       description: 'Default ONPREM SG'
     });
     this.securityGroup.addIngressRule(ec2.Peer.ipv4('10.16.0.0/16'), ec2.Port.allTraffic(), 'Allow All from AWS Environment');
+
+    const securityGroupIngress = new ec2.CfnSecurityGroupIngress(this, 'SecurityGroupIngress', {
+      groupId: this.securityGroup.securityGroupId,
+      ipProtocol: '-1',
+      sourceSecurityGroupId: this.securityGroup.securityGroupId,
+      description: 'Allow porters of this security group to access other resources using the same SG under any protocol.'
+    });
 
     this.eniR1Private = new ec2.CfnNetworkInterface(this, 'eniR1Private', {
       subnetId: priv1Subnet.attrSubnetId,
@@ -152,6 +174,47 @@ export class OnPremisesStack extends Stack {
       networkInterfaceId: this.eniR2Private.attrId,
       deviceIndex: "1"
     });
+
+    const server1 = this.createServer('server1', this.priv1Subnet, 'ONPREM-SERVER1');
+    const server2 = this.createServer('server2', this.priv1Subnet, 'ONPREM-SERVER2');
+
+    const ssmInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmEndpoint', {
+      vpc: this.vpc,
+      service: ec2.InterfaceVpcEndpointAwsService.SSM,
+      privateDnsEnabled: true,
+      subnets: {
+        subnets: [this.pubSubnet]
+      },
+      securityGroups: [this.securityGroup]
+    });
+
+    const ssmEc2MessagesInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmEc2MessagesEndpoint', {
+      vpc: this.vpc,
+      service: ec2.InterfaceVpcEndpointAwsService.EC2_MESSAGES,
+      privateDnsEnabled: true,
+      subnets: {
+        subnets: [this.pubSubnet]
+      },
+      securityGroups: [this.securityGroup]
+    });
+
+    const ssmMessagesInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmMessagesEndpoint', {
+      vpc: this.vpc,
+      service: ec2.InterfaceVpcEndpointAwsService.SSM_MESSAGES,
+      privateDnsEnabled: true,
+      subnets: {
+        subnets: [this.pubSubnet]
+      },
+      securityGroups: [this.securityGroup]
+    });
+
+    const s3InterfaceEndpoint = new ec2.CfnVPCEndpoint(this, 's3Endpoint', {
+      vpcId: this.vpc.vpcId,
+      serviceName: `com.amazonaws.${this.region}.s3`,
+      routeTableIds: [this.pubSubnet.subnetId, this.priv1Subnet.subnetId, this.priv2Subnet.subnetId]
+    });
+
+    return {router1, router2};
   }
 
   private createEc2Role() {
@@ -212,7 +275,7 @@ export class OnPremisesStack extends Stack {
       securityGroup: this.securityGroup,
       role: this.ec2Role,
       sourceDestCheck: false,
-      userData: UserData.custom(
+      userData: ec2.UserData.custom(
         `#!/bin/bash -xe
         apt-get update && apt-get install -y strongswan wget
         mkdir /home/ubuntu/demo_assets
@@ -230,5 +293,42 @@ export class OnPremisesStack extends Stack {
     Tags.of(router).add('Name', tag);
 
     return router;
+  }
+
+  private createServer(name: string, subnet: ec2.ISubnet, tag: string) {
+    const server = new ec2.Instance(this, name, {
+      vpc: this.vpc,
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.MICRO),
+      machineImage: ec2.MachineImage.latestAmazonLinux(),
+      vpcSubnets: {
+        subnets: [subnet]
+      },
+      securityGroup: this.securityGroup,
+      role: this.ec2Role
+    });
+
+    return server;
+  }
+
+  private outputs(router1: ec2.Instance, router2: ec2.Instance) {
+    new CfnOutput(this, 'Router1Public', {
+      description: 'Public IP of Router1',
+      value: router1.instancePublicIp
+    });
+
+    new CfnOutput(this, 'Router2Public', {
+      description: 'Public IP of Router2',
+      value: router2.instancePublicIp
+    });
+
+    new CfnOutput(this, 'Router1Private', {
+      description: 'Private IP of Router1',
+      value: router1.instancePrivateIp
+    });
+
+    new CfnOutput(this, 'Router2Private', {
+      description: 'Private IP of Router2',
+      value: router2.instancePrivateIp
+    });
   }
 }
