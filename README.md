@@ -1,9 +1,8 @@
-# Welcome to your CDK TypeScript project
+# Implement a Dynamic, BGP Based, Highly-Available Site-to-Site VPN
 
-You should explore the contents of this project. It demonstrates a CDK app with an instance of a stack (`SiteToSiteVpnStack`)
-which contains an Amazon SQS queue that is subscribed to an Amazon SNS topic.
+The original [project](https://github.com/acantril/learn-cantrill-io-labs/tree/master/AWS_HYBRID_AdvancedVPN) from https://learn.cantrill.io
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+This is just a rewrite of the Cloudformation using CDK 2.X.
 
 ## Useful commands
 
