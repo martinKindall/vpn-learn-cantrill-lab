@@ -12,6 +12,9 @@ export class OnPremisesStack extends Stack {
   private securityGroup: ec2.SecurityGroup;
   private eniR1Private: ec2.CfnNetworkInterface;
   private eniR2Private: ec2.CfnNetworkInterface;
+  private publicRT: ec2.CfnRouteTable;
+  private priv1RT: ec2.CfnRouteTable;
+  private priv2RT: ec2.CfnRouteTable;
 
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
@@ -63,42 +66,42 @@ export class OnPremisesStack extends Stack {
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-2'}]
     });
 
-    const publicRT = new ec2.CfnRouteTable(this, 'publicRT', {
+    this.publicRT = new ec2.CfnRouteTable(this, 'publicRT', {
       vpcId: this.vpc.vpcId,
       tags: [{key: 'Name', value: 'ONPREM-PUBLIC-RT'}]
     });
 
     this.pubSubnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPubSubnet', {
       subnetId: pubSubnet.attrSubnetId,
-      routeTableId: publicRT.attrRouteTableId,
+      routeTableId: this.publicRT.attrRouteTableId,
       availabilityZone: pubSubnetAZ
     });
 
     const defaultRoute = new ec2.CfnRoute(this, 'defaultRoute', {
       gatewayId: internetGW.attrInternetGatewayId,
-      routeTableId: publicRT.attrRouteTableId,
+      routeTableId: this.publicRT.attrRouteTableId,
       destinationCidrBlock: '0.0.0.0/0',
     }).addDependsOn(vpcIgwAttachment);
 
-    const priv1RT = new ec2.CfnRouteTable(this, 'priv1RT', {
+    this.priv1RT = new ec2.CfnRouteTable(this, 'priv1RT', {
       vpcId: this.vpc.vpcId,
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-RT1'}]
     });
 
-    const priv2RT = new ec2.CfnRouteTable(this, 'priv2RT', {
+    this.priv2RT = new ec2.CfnRouteTable(this, 'priv2RT', {
       vpcId: this.vpc.vpcId,
       tags: [{key: 'Name', value: 'ONPREM-PRIVATE-RT2'}]
     });
 
     this.priv1Subnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPriv1Subnet', {
       subnetId: priv1Subnet.attrSubnetId,
-      routeTableId: priv1RT.attrRouteTableId,
+      routeTableId: this.priv1RT.attrRouteTableId,
       availabilityZone: pubSubnetAZ
     });
 
     this.priv2Subnet = ec2.Subnet.fromSubnetAttributes(this, 'importedPriv2Subnet', {
       subnetId: priv2Subnet.attrSubnetId,
-      routeTableId: priv2RT.attrRouteTableId,
+      routeTableId: this.priv2RT.attrRouteTableId,
       availabilityZone: pubSubnetAZ
     });
 
@@ -132,52 +135,34 @@ export class OnPremisesStack extends Stack {
     });
 
     const route1AwsIpv4 = new ec2.CfnRoute(this, 'route1AwsIpv4', {
-      routeTableId: priv1RT.attrRouteTableId,
+      routeTableId: this.priv1RT.attrRouteTableId,
       destinationCidrBlock: '10.16.0.0/16',
       networkInterfaceId: this.eniR1Private.attrId
     });
 
     const route2AwsIpv4 = new ec2.CfnRoute(this, 'route2AwsIpv4', {
-      routeTableId: priv2RT.attrRouteTableId,
+      routeTableId: this.priv2RT.attrRouteTableId,
       destinationCidrBlock: '10.16.0.0/16',
       networkInterfaceId: this.eniR2Private.attrId
     });
 
     const defaultRTToPubAssociation = new ec2.CfnSubnetRouteTableAssociation(this, 'defaultRTToPubAssociation', {
       subnetId: pubSubnet.attrSubnetId,
-      routeTableId: publicRT.attrRouteTableId
+      routeTableId: this.publicRT.attrRouteTableId
     });
 
     const rtToPriv1Association = new ec2.CfnSubnetRouteTableAssociation(this, 'rtToPriv1Association', {
       subnetId: priv1Subnet.attrSubnetId,
-      routeTableId: priv1RT.attrRouteTableId
+      routeTableId: this.priv1RT.attrRouteTableId
     });
 
     const rtToPriv2Association = new ec2.CfnSubnetRouteTableAssociation(this, 'rtToPriv2Association', {
       subnetId: priv2Subnet.attrSubnetId,
-      routeTableId: priv2RT.attrRouteTableId
+      routeTableId: this.priv2RT.attrRouteTableId
     });
   }
 
   private routerAndServersSetups() {
-    const router1 = this.createRouter('router1', 'ONPREM-ROUTER1');
-    const router2 = this.createRouter('router2', 'ONPREM-ROUTER2');
-
-    const attachEni1Router1 = new ec2.CfnNetworkInterfaceAttachment(this, 'attachEni1Router1', {
-      instanceId: router1.instanceId,
-      networkInterfaceId: this.eniR1Private.attrId,
-      deviceIndex: "1"
-    });
-
-    const attachEni1Router2 = new ec2.CfnNetworkInterfaceAttachment(this, 'attachEni1Router2', {
-      instanceId: router2.instanceId,
-      networkInterfaceId: this.eniR2Private.attrId,
-      deviceIndex: "1"
-    });
-
-    const server1 = this.createServer('server1', this.priv1Subnet, 'ONPREM-SERVER1');
-    const server2 = this.createServer('server2', this.priv1Subnet, 'ONPREM-SERVER2');
-
     const ssmInterfaceEndpoint = new ec2.InterfaceVpcEndpoint(this, 'ssmEndpoint', {
       vpc: this.vpc,
       service: ec2.InterfaceVpcEndpointAwsService.SSM,
@@ -211,8 +196,32 @@ export class OnPremisesStack extends Stack {
     const s3InterfaceEndpoint = new ec2.CfnVPCEndpoint(this, 's3Endpoint', {
       vpcId: this.vpc.vpcId,
       serviceName: `com.amazonaws.${this.region}.s3`,
-      routeTableIds: [this.pubSubnet.subnetId, this.priv1Subnet.subnetId, this.priv2Subnet.subnetId]
+      routeTableIds: [this.publicRT.attrRouteTableId, this.priv1RT.attrRouteTableId, this.priv2RT.attrRouteTableId]
     });
+
+    const router1 = this.createRouter('router1', 'ONPREM-ROUTER1');
+    const router2 = this.createRouter('router2', 'ONPREM-ROUTER2');
+
+    router1.node.addDependency(ssmInterfaceEndpoint, ssmEc2MessagesInterfaceEndpoint, ssmMessagesInterfaceEndpoint);
+    router2.node.addDependency(ssmInterfaceEndpoint, ssmEc2MessagesInterfaceEndpoint, ssmMessagesInterfaceEndpoint);
+
+    const attachEni1Router1 = new ec2.CfnNetworkInterfaceAttachment(this, 'attachEni1Router1', {
+      instanceId: router1.instanceId,
+      networkInterfaceId: this.eniR1Private.attrId,
+      deviceIndex: "1"
+    });
+
+    const attachEni1Router2 = new ec2.CfnNetworkInterfaceAttachment(this, 'attachEni1Router2', {
+      instanceId: router2.instanceId,
+      networkInterfaceId: this.eniR2Private.attrId,
+      deviceIndex: "1"
+    });
+
+    const server1 = this.createServer('server1', this.priv1Subnet, 'ONPREM-SERVER1');
+    const server2 = this.createServer('server2', this.priv2Subnet, 'ONPREM-SERVER2');
+
+    server1.node.addDependency(ssmInterfaceEndpoint, ssmEc2MessagesInterfaceEndpoint, ssmMessagesInterfaceEndpoint);
+    server2.node.addDependency(ssmInterfaceEndpoint, ssmEc2MessagesInterfaceEndpoint, ssmMessagesInterfaceEndpoint);
 
     return {router1, router2};
   }
@@ -264,7 +273,7 @@ export class OnPremisesStack extends Stack {
     ec2Policy.attachToRole(this.ec2Role);
   }
 
-  private createRouter(name: string, tag: string) {
+  private createRouter(name: string, tag: string): ec2.Instance {
     const router = new ec2.Instance(this, name, {
       vpc: this.vpc,
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.SMALL),
@@ -295,7 +304,7 @@ export class OnPremisesStack extends Stack {
     return router;
   }
 
-  private createServer(name: string, subnet: ec2.ISubnet, tag: string) {
+  private createServer(name: string, subnet: ec2.ISubnet, tag: string): ec2.Instance {
     const server = new ec2.Instance(this, name, {
       vpc: this.vpc,
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T2, ec2.InstanceSize.MICRO),
