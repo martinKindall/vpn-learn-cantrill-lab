@@ -285,18 +285,18 @@ export class OnPremisesStack extends Stack {
       role: this.ec2Role,
       sourceDestCheck: false,
       userData: ec2.UserData.custom(
-        `#!/bin/bash -xe
-        apt-get update && apt-get install -y strongswan wget
-        mkdir /home/ubuntu/demo_assets
-        cd /home/ubuntu/demo_assets
-        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec-vti.sh
-        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec.conf
-        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec.secrets
-        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/51-eth1.yaml
-        wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ffrouting-install.sh
-        chown ubuntu:ubuntu /home/ubuntu/demo_assets -R
-        cp /home/ubuntu/demo_assets/51-eth1.yaml /etc/netplan
-        netplan --debug apply`
+`#!/bin/bash -xe
+apt-get update && apt-get install -y strongswan wget
+mkdir /home/ubuntu/demo_assets
+cd /home/ubuntu/demo_assets
+wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec-vti.sh
+wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec.conf
+wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ipsec.secrets
+wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/51-eth1.yaml
+wget https://raw.githubusercontent.com/acantril/learn-cantrill-io-labs/master/AWS_HYBRID_AdvancedVPN/OnPremRouter1/ffrouting-install.sh
+chown ubuntu:ubuntu /home/ubuntu/demo_assets -R
+cp /home/ubuntu/demo_assets/51-eth1.yaml /etc/netplan
+netplan --debug apply`
       )
     });
     Tags.of(router).add('Name', tag);
